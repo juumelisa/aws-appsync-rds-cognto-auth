@@ -1,0 +1,7 @@
+{
+  "version": "2018-05-29",
+  "statements": [
+    "CREATE TABLE IF NOT EXISTS transaction ( id varchar(100) NOT NULL, amount varchar(11) NOT NULL, transaction_date date NOT NULL DEFAULT CURRENT_DATE, transaction_time time NOT NULL DEFAULT CURRENT_TIME, transaction_type varchar(10) NOT NULL, user_id varchar(100) NOT NULL, PRIMARY KEY (id))",
+    "select * from transaction"
+  ]
+}

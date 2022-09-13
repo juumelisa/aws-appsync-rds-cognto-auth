@@ -1,0 +1,7 @@
+{
+    "version": "2018-05-29",
+    "statements": [
+        $util.toJson("select * from transaction WHERE id='$ctx.args.id'"),
+        $util.toJson("delete from transaction WHERE id='$ctx.args.id'")
+    ]
+}

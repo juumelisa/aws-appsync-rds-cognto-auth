@@ -1,0 +1,8 @@
+#set($offset = $ctx.args.page - 1)
+#set($page = $offset * $ctx.args.limit)
+{
+  "version": "2018-05-29",
+  "statements": [
+    "select * from transaction WHERE user_id='$ctx.identity.sub' ORDER BY transaction_date DESC, transaction_time DESC LIMIT $ctx.args.limit OFFSET $page "
+  ]
+}

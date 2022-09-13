@@ -1,0 +1,7 @@
+{
+    "version": "2018-05-29",
+    "statements": [
+        "update transaction set amount='$ctx.args.input.amount', transaction_date='$util.time.nowISO8601()', transaction_time='$util.time.nowFormatted("HH:mm:ssZ")', transaction_type='$ctx.args.input.transaction_type', user_id='$ctx.identity.sub' WHERE id='$ctx.args.id'",
+        "select * from transaction WHERE id='$ctx.args.id'"
+    ]
+}

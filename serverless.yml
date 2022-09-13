@@ -1,0 +1,365 @@
+service: aurora-appsync
+frameworkVersion: "3"
+
+plugins:
+  - serverless-dotenv-plugin
+  - serverless-appsync-plugin
+
+useDotenv: true
+
+provider:
+  name: aws
+  runtime: nodejs14.x
+  region: ap-southeast-1
+  stage: dev
+  iam: 
+    role: LambdaExecutionRole
+
+functions:
+  GetAllUser:
+    handler: functions/getUserList.handler
+    name: ${self:service}-${self:provider.stage}-get-all-user
+    description: Function for get user list endpoint
+    runtime: ${self:provider.runtime}
+  PreSignup:
+    handler: functions/preSignup.handler
+    name: ${self:service}-${self:provider.stage}-presignup
+    description: Handling pre-signup in user pools
+    runtime: ${self:provider.runtime}
+  PostConfirmation:
+    handler: functions/postConfirmation.handler
+    name: ${self:service}-${self:provider.stage}-post-confirmation
+    description: Handling post confirmation in user pools
+    runtime: ${self:provider.runtime}
+
+
+custom:
+  defaultStage: dev
+  currentStage: ${opt:stage, self:custom.defaultStage}
+  userPoolName: transaction-${self:custom.currentStage}
+  userPoolClientName: transaction-client-${self:custom.currentStage}
+  cluster: !Sub
+    - 'arn:aws:rds:${env:REGION}:${env:ACCOUNT_ID}:cluster:${clusterIdentifier}'
+    - clusterIdentifier: !Ref RDSCluster
+  AURORA:
+    DB_NAME: ${env:RDS_PREFIX}_${env:STAGE}
+
+resources:
+  Resources:
+    TransactionRDSTableDataSource:
+      Type: AWS::AppSync::DataSource
+      Properties:
+        ApiId: !GetAtt GraphQLApi.ApiId
+        Name: dataTransaction
+        Type: RELATIONAL_DATABASE
+        ServiceRoleArn: { Fn::GetAtt: [AppSyncRDSServiceRole, Arn] }
+        RelationalDatabaseConfig:
+          RdsHttpEndpointConfig:
+            DbClusterIdentifier: ${self:custom.cluster}
+            DatabaseName: ${self:custom.AURORA.DB_NAME}
+            AwsSecretStoreArn: !Ref RDSInstanceSecret
+            AwsRegion: ${self:provider.region}
+          RelationalDatabaseSourceType: RDS_HTTP_ENDPOINT
+    LambdaDataSource:
+      Type: AWS::AppSync::DataSource
+      Properties:
+        ApiId: !GetAtt GraphQLApi.ApiId
+        Name: lambdaDataSourceTrx
+        Type: AWS_LAMBDA
+        ServiceRoleArn: { Fn::GetAtt: [LambdaExecutionRole, Arn] }
+        LambdaConfig:
+            LambdaFunctionArn: { Fn::GetAtt: [GetAllUserLambdaFunction, Arn] }
+    GraphQLApi:
+      Type: AWS::AppSync::GraphQLApi
+      Properties:
+        Name: appsync-aurora-trx
+        AuthenticationType: AMAZON_COGNITO_USER_POOLS
+        UserPoolConfig:
+          AwsRegion: !Ref AWS::Region
+          DefaultAction: ALLOW
+          UserPoolId: !Ref CognitoUserPool
+    GraphQLSchema:
+      Type: "AWS::AppSync::GraphQLSchema"
+      Properties:
+        ApiId: !GetAtt GraphQLApi.ApiId
+        Definition: ${file(schema.api.graphql)}
+    RDSCluster:
+      Type: AWS::RDS::DBCluster
+      Properties:
+        MasterUsername: ${env:RDS_USERNAME}_${env:STAGE}
+        MasterUserPassword: ${env:DB_PASSWORD}
+        DatabaseName: ${self:custom.AURORA.DB_NAME}
+        Engine: aurora-postgresql
+        EngineMode: serverless
+        ScalingConfiguration:
+          AutoPause: true
+          MaxCapacity: 4
+          MinCapacity: 2
+          SecondsUntilAutoPause: 300
+        EnableHttpEndpoint: true
+        StorageEncrypted: true
+    RDSInstanceSecret:
+      Type: AWS::SecretsManager::Secret
+      Properties:
+        Description: 'Secret for the RDS instance'
+        SecretString: '{"username":"${env:RDS_USERNAME}_${env:STAGE}","password":"${env:DB_PASSWORD}"}'
+    SecretRDSInstanceAttachment:
+      Type: AWS::SecretsManager::SecretTargetAttachment
+      Properties:
+        SecretId: !Ref RDSInstanceSecret
+        TargetId: !Ref RDSCluster
+        TargetType: AWS::RDS::DBCluster
+    AppSyncRDSServiceRole:
+      Type: "AWS::IAM::Role"
+      Properties:
+        RoleName: "appsync_rds_${self:service}_${self:provider.stage}"
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Principal:
+                Service:
+                  - "appsync.amazonaws.com"
+              Action:
+                - "sts:AssumeRole"
+        Policies:
+          - PolicyName: "appsync_rds_${self:service}_${self:provider.stage}-Policy"
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: 'Allow'
+                  Action:
+                    - 'rds-data:DeleteItems'
+                    - 'rds-data:ExecuteSql'
+                    - 'rds-data:ExecuteStatement'
+                    - 'rds-data:GetItems'
+                    - 'rds-data:InsertItems'
+                    - 'rds-data:UpdateItems'
+                  Resource:
+                    - 'arn:aws:rds:${env:REGION}:${env:ACCOUNT_ID}:cluster:*'
+                    - 'arn:aws:rds:${env:REGION}:${env:ACCOUNT_ID}:cluster:*:*'
+                - Effect: 'Allow'
+                  Action:
+                    - 'secretsmanager:GetSecretValue'
+                  Resource:
+                    - 'arn:aws:secretsmanager:*:*:secret:RDSInstanceSecret*'
+    LambdaExecutionRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - lambda.amazonaws.com
+              - appsync.amazonaws.com
+            Action:
+              - sts:AssumeRole
+        Path: "/"
+        Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              Sid: CognitoIDP
+              Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+                - cognito-idp:*
+              Resource: "*"
+    MyLambdaInvocationPermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        Action: lambda:InvokeFunction
+        FunctionName: !GetAtt PreSignupLambdaFunction.Arn
+        Principal: cognito-idp.amazonaws.com
+        SourceArn: !GetAtt CognitoUserPool.Arn
+    PostConfirmationLambdaInvocationPermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        Action: lambda:InvokeFunction
+        FunctionName: !GetAtt PostConfirmationLambdaFunction.Arn
+        Principal: cognito-idp.amazonaws.com
+        SourceArn: !GetAtt CognitoUserPool.Arn
+    CognitoUserPool:
+      Type: "AWS::Cognito::UserPool"
+      Properties:
+        AccountRecoverySetting:
+          RecoveryMechanisms:
+            - Name: verified_email
+              Priority: 1
+        AdminCreateUserConfig:
+          AllowAdminCreateUserOnly: false
+        EmailConfiguration:
+          EmailSendingAccount: COGNITO_DEFAULT
+        LambdaConfig:
+          PostConfirmation: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${self:service}-${self:provider.stage}-post-confirmation'
+          PreSignUp: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${self:service}-${self:provider.stage}-presignup'
+        MfaConfiguration: OFF
+        UserPoolName: ${self:custom.userPoolName}
+        Policies:
+          PasswordPolicy:
+            MinimumLength: 6
+            RequireLowercase: False
+            RequireNumbers: True
+            RequireSymbols: False
+            RequireUppercase: False
+    CognitoUserPoolDomain:
+      Type: AWS::Cognito::UserPoolDomain
+      Properties:
+        Domain: ${env:DOMAIN_NAME}
+        UserPoolId:
+          Ref: CognitoUserPool
+    CognitoUserPoolClient:
+      Type: "AWS::Cognito::UserPoolClient"
+      Properties:
+        AllowedOAuthFlows:
+          - code
+          - implicit
+        AllowedOAuthFlowsUserPoolClient: true
+        AllowedOAuthScopes: 
+          - phone
+          - email
+          - openid
+          - aws.cognito.signin.user.admin
+          - profile
+        ClientName: ${self:custom.userPoolClientName}
+        CallbackURLs:
+          - ${env:CALLBACK_URL}
+        DefaultRedirectURI: ${env:CALLBACK_URL}
+        LogoutURLs:
+          - ${env:LOGOUT_URL}
+        GenerateSecret: False
+        SupportedIdentityProviders:
+          - COGNITO
+        UserPoolId:
+          Ref: CognitoUserPool
+    CognitoUserPoolAdmin:
+      Type: "AWS::Cognito::UserPoolGroup"
+      Properties:
+        Description: "Admin can read everyone transaction"
+        GroupName: "admin"
+        UserPoolId:
+          Ref: CognitoUserPool
+    CognitoUserPoolUser:
+      Type: "AWS::Cognito::UserPoolGroup"
+      Properties:
+        Description: "User can read everyone transaction"
+        GroupName: "user"
+        UserPoolId:
+          Ref: CognitoUserPool
+    CreateTableFunction:
+      Type: "AWS::AppSync::Resolver"
+      Properties:
+        ApiId: !GetAtt GraphQLApi.ApiId
+        TypeName: Query
+        FieldName: createTable
+        DataSourceName: !GetAtt TransactionRDSTableDataSource.Name
+        RequestMappingTemplate: ${file(./mapping-templates/Query.createTable.request.vtl)}
+        ResponseMappingTemplate: ${file(./mapping-templates/Query.createTable.response.vtl)}  
+      DependsOn: GraphQLSchema
+    CreateTransactionResolver:
+      Type: "AWS::AppSync::Resolver"
+      Properties:
+        ApiId: !GetAtt GraphQLApi.ApiId
+        TypeName: Mutation
+        FieldName: createTransaction
+        DataSourceName: !GetAtt TransactionRDSTableDataSource.Name
+        RequestMappingTemplate: ${file(./mapping-templates/Mutation.createTransaction.request.vtl)}
+        ResponseMappingTemplate: ${file(./mapping-templates/Mutation.createTransaction.response.vtl)}  
+      DependsOn: GraphQLSchema
+    GetTransactionResolver:
+      Type: "AWS::AppSync::Resolver"
+      Properties:
+        ApiId: !GetAtt GraphQLApi.ApiId
+        TypeName: Query
+        FieldName: getTransaction
+        DataSourceName: !GetAtt TransactionRDSTableDataSource.Name
+        RequestMappingTemplate: ${file(./mapping-templates/Query.getTransaction.request.vtl)}
+        ResponseMappingTemplate: ${file(./mapping-templates/Query.getTransaction.response.vtl)} 
+      DependsOn: GraphQLSchema
+    GetAllTransactionResolver:
+      Type: "AWS::AppSync::Resolver"
+      Properties:
+        ApiId: !GetAtt GraphQLApi.ApiId
+        TypeName: Query
+        FieldName: getAllTransaction
+        DataSourceName: !GetAtt TransactionRDSTableDataSource.Name
+        RequestMappingTemplate: ${file(./mapping-templates/Query.getAllTransaction.request.vtl)}
+        ResponseMappingTemplate: ${file(./mapping-templates/Query.getAllTransaction.response.vtl)} 
+      DependsOn: GraphQLSchema
+    GetAllTransactionAdminResolver:
+      Type: "AWS::AppSync::Resolver"
+      Properties:
+        ApiId: !GetAtt GraphQLApi.ApiId
+        TypeName: Query
+        FieldName: getAllTransactionAdmin
+        DataSourceName: !GetAtt TransactionRDSTableDataSource.Name
+        RequestMappingTemplate: ${file(./mapping-templates/Query.getAllTransactionAdmin.request.vtl)}
+        ResponseMappingTemplate: ${file(./mapping-templates/Query.getAllTransactionAdmin.response.vtl)} 
+      DependsOn: GraphQLSchema
+    UpdateTransactionResolver:
+      Type: "AWS::AppSync::Resolver"
+      Properties:
+        ApiId: !GetAtt GraphQLApi.ApiId
+        TypeName: Mutation
+        FieldName: updateTransaction
+        Kind: PIPELINE
+        PipelineConfig: 
+          Functions:
+            - !GetAtt GetTransactionFunction.FunctionId
+            - !GetAtt UpdateTransactionFunction.FunctionId
+        RequestMappingTemplate: "{}"
+        ResponseMappingTemplate: "$util.toJson($context.result)"  
+      DependsOn: GraphQLSchema
+    DeleteTransactionResolver:
+      Type: "AWS::AppSync::Resolver"
+      Properties:
+        ApiId: !GetAtt GraphQLApi.ApiId
+        TypeName: Mutation
+        FieldName: deleteTransaction
+        Kind: PIPELINE
+        PipelineConfig: 
+          Functions:
+            - !GetAtt GetTransactionFunction.FunctionId
+            - !GetAtt DeleteTransactionFunction.FunctionId
+        RequestMappingTemplate: "{}"
+        ResponseMappingTemplate: "$util.toJson($context.result)"  
+      DependsOn: GraphQLSchema
+    GetTransactionFunction:
+      Type: AWS::AppSync::FunctionConfiguration 
+      Properties:
+        ApiId: !GetAtt GraphQLApi.ApiId
+        Name: getTransaction
+        DataSourceName: !GetAtt TransactionRDSTableDataSource.Name
+        FunctionVersion: "2018-05-29"
+        RequestMappingTemplate: ${file(./mapping-templates/Query.getTransaction.request.vtl)}
+        ResponseMappingTemplate: ${file(./mapping-templates/Query.getTransaction.response.vtl)}
+    UpdateTransactionFunction:
+      Type: AWS::AppSync::FunctionConfiguration 
+      Properties:
+        ApiId: !GetAtt GraphQLApi.ApiId
+        Name: updateTransaction
+        DataSourceName: !GetAtt TransactionRDSTableDataSource.Name
+        FunctionVersion: "2018-05-29"
+        RequestMappingTemplate: ${file(./mapping-templates/Mutation.updateTransaction.request.vtl)}
+        ResponseMappingTemplate: ${file(./mapping-templates/Mutation.updateTransaction.response.vtl)}
+    DeleteTransactionFunction:
+      Type: AWS::AppSync::FunctionConfiguration 
+      Properties:
+        ApiId: !GetAtt GraphQLApi.ApiId
+        Name: deleteTransaction
+        DataSourceName: !GetAtt TransactionRDSTableDataSource.Name
+        FunctionVersion: "2018-05-29"
+        RequestMappingTemplate: ${file(./mapping-templates/Mutation.deleteTransaction.request.vtl)}
+        ResponseMappingTemplate: ${file(./mapping-templates/Mutation.deleteTransaction.response.vtl)}
+    GetAllUserResolver:
+      Type: "AWS::AppSync::Resolver"
+      Properties:
+        ApiId: !GetAtt GraphQLApi.ApiId
+        TypeName: Query
+        FieldName: getUserList
+        DataSourceName: !GetAtt LambdaDataSource.Name
+        RequestMappingTemplate: ${file(./mapping-templates/Query.getUserList.request.vtl)}
+        ResponseMappingTemplate: ${file(./mapping-templates/Query.getUserList.response.vtl)}

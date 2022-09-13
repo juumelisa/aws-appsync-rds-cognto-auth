@@ -1,0 +1,56 @@
+schema {
+    query: Query
+    mutation: Mutation
+    # subscription: Subscription
+}
+
+type Query {
+    getUserList(paginationToken: String, limit: Int): UserList
+    createTable: Transaction
+    getTransaction(id: ID!): Transaction
+    getAllTransaction(limit: Int!, page: Int!): [Transaction]
+    getAllTransactionAdmin(limit: Int!, page: Int!): [Transaction]
+        @aws_auth(cognito_groups: ["admin"])
+    getTransactionType(transaction_type: String): [Transaction]
+}
+
+type Mutation {
+    createTransaction(input: TransactionInput!): Transaction
+        # @aws_auth(cognito_groups: ["user"])
+    updateTransaction(id: ID!, input: TransactionInput): Transaction
+    deleteTransaction(id: ID!): Transaction
+}
+
+enum TransactionType {
+	TopUp
+    Transfer
+}
+
+input TransactionInput {
+    amount: Int!
+    transaction_type: TransactionType
+}
+
+type Transaction {
+    id: ID
+    user_id: String
+    transaction_date: AWSDate
+    transaction_time: AWSTime
+    amount: Int
+    transaction_type: String
+}
+
+type UserList {
+	Users: [User]
+	PaginationToken: String
+}
+
+type User {
+    Username: String
+    Attributes: [UserAttributes]
+}
+
+type UserAttributes {
+    Name: String
+    Value: String
+}
