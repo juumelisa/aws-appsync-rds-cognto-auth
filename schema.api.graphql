@@ -11,7 +11,6 @@ type Query {
     getAllTransaction(limit: Int!, page: Int!): [Transaction]
     getAllTransactionAdmin(limit: Int!, page: Int!): [Transaction]
         @aws_auth(cognito_groups: ["admin"])
-    getTransactionType(transaction_type: String): [Transaction]
 }
 
 type Mutation {
